@@ -1,0 +1,17 @@
+services:
+    mirotalkrnd:
+        image: mirotalk/rnd:latest
+        container_name: mirotalkrnd
+        hostname: mirotalkrnd
+        # Run as non-root (uid:gid). The image already defaults to the non-root
+        # "node" user (1000:1000); set this to override with a different uid/gid.
+        user: '1000:1000'
+        restart: unless-stopped
+        ports:
+            - '${PORT:-4010}:${PORT:-4010}'
+        volumes:
+            - .env:/app/.env:ro
+            # Optional volumes for real-time updates:
+            # - ./public/:/app/public/:ro
+            # - ./src/:/app/src/:ro
+            # - ./server.js:/app/server.js

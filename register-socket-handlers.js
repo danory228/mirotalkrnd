@@ -1,0 +1,389 @@
+const { yellow } = require('./moderation-service');
+
+const CHAT_MAX_LENGTH = 500;
+const CHAT_RATE_LIMIT_PER_10S = 10;
+const CHAT_TYPING_RATE_LIMIT_PER_10S = 20;
+
+function normalizeIp(ip) {
+    if (!ip) {
+        return 'unknown';
+    }
+
+    if (ip.startsWith('::ffff:')) {
+        return ip.slice(7);
+    }
+
+    return ip;
+}
+
+// X-Forwarded-For is client-controlled, so it is only followed through proxies the operator trusts
+// (TRUST_PROXY). Without that, a user could pick any IP, which would defeat IP bans and limits.
+function getSocketIp(socket, isTrustedProxy) {
+    const remoteIp = normalizeIp(socket.handshake.address);
+    const forwardedFor = socket.handshake.headers['x-forwarded-for'];
+    if (typeof forwardedFor !== 'string' || !forwardedFor.trim()) {
+        return remoteIp;
+    }
+
+    // Nearest hop first: the connecting address, then X-Forwarded-For from right to left.
+    const addresses = [
+        remoteIp,
+        ...forwardedFor
+            .split(',')
+            .map((address) => normalizeIp(address.trim()))
+            .reverse(),
+    ];
+
+    for (let index = 0; index < addresses.length - 1; index += 1) {
+        if (!isTrustedProxy(addresses[index], index)) {
+            return addresses[index];
+        }
+    }
+
+    return addresses[addresses.length - 1];
+}
+
+function registerSocketHandlers({
+    io,
+    limits,
+    matchmaking,
+    skipAvoidSamePartner = false,
+    moderation = null,
+    isTrustedProxy = () => false,
+    captureException = () => {},
+}) {
+    const socketsByIp = new Map();
+    const skipRateWindowsBySocket = new Map();
+    const chatRateWindowsBySocket = new Map();
+    const chatTypingRateWindowsBySocket = new Map();
+    const { maxActiveUsers, maxConnectionsPerIp, skipRateLimitPer10s } = limits;
+
+    function safeHandler(eventName, handler) {
+        const handleError = (error) => {
+            console.error(`Socket handler "${eventName}" failed:`, error);
+            captureException(error, `socket:${eventName}`);
+        };
+
+        return async (...args) => {
+            try {
+                return await handler(...args);
+            } catch (error) {
+                handleError(error);
+            }
+        };
+    }
+
+    function trackSocketForIp(socketId, ip) {
+        const socketIds = socketsByIp.get(ip) ?? new Set();
+        socketIds.add(socketId);
+        socketsByIp.set(ip, socketIds);
+    }
+
+    function untrackSocketForIp(socketId, ip) {
+        const socketIds = socketsByIp.get(ip);
+        if (!socketIds) {
+            return;
+        }
+
+        socketIds.delete(socketId);
+        if (!socketIds.size) {
+            socketsByIp.delete(ip);
+        }
+    }
+
+    function getConnectionsForIp(ip) {
+        const socketIds = socketsByIp.get(ip);
+        return socketIds?.size ?? 0;
+    }
+
+    function isRateLimited(windowsBySocket, socketId, limit) {
+        if (!limit) {
+            return false;
+        }
+
+        const now = Date.now();
+        const windowMs = 10_000;
+        const currentWindow = windowsBySocket.get(socketId);
+
+        if (!currentWindow || now - currentWindow.windowStartMs >= windowMs) {
+            windowsBySocket.set(socketId, { windowStartMs: now, count: 1 });
+            return false;
+        }
+
+        if (currentWindow.count >= limit) {
+            return true;
+        }
+
+        currentWindow.count += 1;
+        return false;
+    }
+
+    function isSkipRateLimited(socketId) {
+        return isRateLimited(skipRateWindowsBySocket, socketId, skipRateLimitPer10s);
+    }
+
+    function clearRateLimits(socketId) {
+        skipRateWindowsBySocket.delete(socketId);
+        chatRateWindowsBySocket.delete(socketId);
+        chatTypingRateWindowsBySocket.delete(socketId);
+    }
+
+    function logConnectedUsers(eventLabel, socketId, reason, ip) {
+        const connectedUsers = io.of('/').sockets.size;
+        const limitLabel = maxActiveUsers ? `/${maxActiveUsers}` : '';
+        const reasonLabel = reason ? ` reason="${reason}"` : '';
+        const ipLabel = ip ? ` ip=${ip}` : '';
+        const timestamp = new Date().toISOString();
+        console.log(
+            `[${timestamp}] [users] ${eventLabel} socket=${socketId}${ipLabel} connected=${connectedUsers}${limitLabel}${reasonLabel}`
+        );
+    }
+
+    // Ends the pair and drops both report targets, so nobody can report a partner they are no longer matched with.
+    // The own entry is always cleared, as a disconnect can race with the match bookkeeping.
+    async function unpairAndForget(socketId, reason) {
+        const partnerId = await matchmaking.unpair(socketId, reason);
+        await moderation?.forgetPartner(socketId);
+        if (partnerId) {
+            await moderation?.forgetPartner(partnerId);
+        }
+        return partnerId;
+    }
+
+    if (moderation?.enabled) {
+        io.use(async (socket, next) => {
+            try {
+                const banIp = getSocketIp(socket, isTrustedProxy);
+                const ban = await moderation.getBan(banIp);
+                if (ban) {
+                    console.warn(
+                        yellow(
+                            `[${new Date().toISOString()}] [moderation] connection rejected (banned) ip=${banIp} until=${new Date(ban.expiresAt).toISOString()}`
+                        )
+                    );
+                    const error = new Error('You are banned.');
+                    error.data = { code: 'BANNED', expiresAt: ban.expiresAt };
+                    next(error);
+                    return;
+                }
+            } catch (error) {
+                // Fail open: a broken ban store must not lock everyone out.
+                console.error('Ban check failed:', error);
+                captureException(error, 'socket:ban-check');
+            }
+
+            next();
+        });
+    }
+
+    io.use((socket, next) => {
+        const socketIp = getSocketIp(socket, isTrustedProxy);
+
+        if (!maxActiveUsers) {
+            if (!maxConnectionsPerIp) {
+                socket.data.clientIp = socketIp;
+                next();
+                return;
+            }
+        }
+
+        if (maxActiveUsers) {
+            const activeUsers = io.of('/').sockets.size;
+            if (activeUsers >= maxActiveUsers) {
+                const error = new Error('Server is at full capacity. Please try again shortly.');
+                error.data = {
+                    code: 'SERVER_FULL',
+                    maxActiveUsers,
+                };
+
+                console.warn(`Connection rejected (capacity reached): ${socket.id} (${activeUsers}/${maxActiveUsers})`);
+                next(error);
+                return;
+            }
+        }
+
+        if (maxConnectionsPerIp) {
+            const ipConnections = getConnectionsForIp(socketIp);
+            if (ipConnections >= maxConnectionsPerIp) {
+                const error = new Error(
+                    'Too many connections from this network. Please close another tab/device and retry.'
+                );
+                error.data = {
+                    code: 'TOO_MANY_CONNECTIONS_FROM_IP',
+                    maxConnectionsPerIp,
+                };
+
+                console.warn(
+                    `Connection rejected (ip limit): ${socket.id} ip=${socketIp} (${ipConnections}/${maxConnectionsPerIp})`
+                );
+                next(error);
+                return;
+            }
+        }
+
+        socket.data.clientIp = socketIp;
+        next();
+    });
+
+    io.on('connection', (socket) => {
+        const clientIp = socket.data.clientIp || 'unknown';
+        trackSocketForIp(socket.id, clientIp);
+        logConnectedUsers('connected', socket.id, null, clientIp);
+
+        socket.on(
+            'find-partner',
+            safeHandler('find-partner', async () => {
+                await unpairAndForget(socket.id, 'partner-skipped');
+                await matchmaking.findPartnerFor(socket.id);
+            })
+        );
+
+        socket.on(
+            'skip-partner',
+            safeHandler('skip-partner', async () => {
+                if (isSkipRateLimited(socket.id)) {
+                    socket.emit('server-notice', {
+                        code: 'SKIP_RATE_LIMITED',
+                        message: 'You are skipping too quickly. Please wait a few seconds and try again.',
+                        retryAfterSeconds: 10,
+                        maxSkipsPerWindow: skipRateLimitPer10s,
+                    });
+                    return;
+                }
+
+                const previousPartnerId = await unpairAndForget(socket.id, 'partner-skipped');
+                const excludeId = skipAvoidSamePartner ? previousPartnerId : null;
+                await matchmaking.findPartnerFor(socket.id, { excludeId });
+
+                if (previousPartnerId && (await matchmaking.socketExists(previousPartnerId))) {
+                    await matchmaking.findPartnerFor(previousPartnerId, { excludeId: excludeId && socket.id });
+                }
+            })
+        );
+
+        socket.on(
+            'webrtc-offer',
+            safeHandler('webrtc-offer', async (payload) => {
+                const partnerId = await matchmaking.getPartnerId(socket.id);
+                if (!partnerId || !payload?.sdp) {
+                    return;
+                }
+                io.to(partnerId).emit('webrtc-offer', { sdp: payload.sdp });
+            })
+        );
+
+        socket.on(
+            'webrtc-answer',
+            safeHandler('webrtc-answer', async (payload) => {
+                const partnerId = await matchmaking.getPartnerId(socket.id);
+                if (!partnerId || !payload?.sdp) {
+                    return;
+                }
+                io.to(partnerId).emit('webrtc-answer', { sdp: payload.sdp });
+            })
+        );
+
+        socket.on(
+            'webrtc-ice-candidate',
+            safeHandler('webrtc-ice-candidate', async (payload) => {
+                const partnerId = await matchmaking.getPartnerId(socket.id);
+                if (!partnerId || !payload?.candidate) {
+                    return;
+                }
+                io.to(partnerId).emit('webrtc-ice-candidate', { candidate: payload.candidate });
+            })
+        );
+
+        socket.on(
+            'chat-message',
+            safeHandler('chat-message', async (payload) => {
+                const text = typeof payload?.text === 'string' ? payload.text.trim() : '';
+                if (!text || text.length > CHAT_MAX_LENGTH) {
+                    return;
+                }
+
+                if (isRateLimited(chatRateWindowsBySocket, socket.id, CHAT_RATE_LIMIT_PER_10S)) {
+                    socket.emit('server-notice', {
+                        code: 'CHAT_RATE_LIMITED',
+                        message: 'You are sending messages too quickly. Please slow down.',
+                    });
+                    return;
+                }
+
+                const partnerId = await matchmaking.getPartnerId(socket.id);
+                if (!partnerId) {
+                    return;
+                }
+                io.to(partnerId).emit('chat-message', { text });
+            })
+        );
+
+        socket.on(
+            'chat-typing',
+            safeHandler('chat-typing', async (payload) => {
+                if (typeof payload?.typing !== 'boolean') {
+                    return;
+                }
+
+                if (isRateLimited(chatTypingRateWindowsBySocket, socket.id, CHAT_TYPING_RATE_LIMIT_PER_10S)) {
+                    return;
+                }
+
+                const partnerId = await matchmaking.getPartnerId(socket.id);
+                if (!partnerId) {
+                    return;
+                }
+                io.to(partnerId).emit('chat-typing', { typing: payload.typing });
+            })
+        );
+
+        socket.on(
+            'media-state-update',
+            safeHandler('media-state-update', async (payload) => {
+                if (typeof payload?.isMuted !== 'boolean' || typeof payload?.isCameraOff !== 'boolean') {
+                    return;
+                }
+
+                await matchmaking.setMediaStateForSocket(socket.id, {
+                    isMuted: payload.isMuted,
+                    isCameraOff: payload.isCameraOff,
+                });
+            })
+        );
+
+        socket.on(
+            'report-partner',
+            safeHandler('report-partner', async (ack) => {
+                const reply = typeof ack === 'function' ? ack : () => {};
+                if (!moderation?.enabled) {
+                    reply({ ok: false, code: 'DISABLED' });
+                    return;
+                }
+
+                const result = await moderation.report(socket.id, clientIp);
+                reply(result === 'recorded' ? { ok: true } : { ok: false, code: 'NO_PARTNER' });
+            })
+        );
+
+        socket.on(
+            'disconnect',
+            safeHandler('disconnect', async (reason) => {
+                clearRateLimits(socket.id);
+                untrackSocketForIp(socket.id, clientIp);
+                logConnectedUsers('disconnected', socket.id, reason, clientIp);
+
+                await matchmaking.removeFromQueue(socket.id);
+                const previousPartnerId = await unpairAndForget(socket.id, 'partner-left');
+                await matchmaking.deleteMediaStateForSocket(socket.id);
+
+                if (previousPartnerId && (await matchmaking.socketExists(previousPartnerId))) {
+                    await matchmaking.findPartnerFor(previousPartnerId);
+                }
+            })
+        );
+    });
+}
+
+module.exports = {
+    registerSocketHandlers,
+};

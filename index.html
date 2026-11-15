@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>{{APP_NAME}}</title>
+        <meta name="description" content="{{OG_DESCRIPTION}}" />
+        <meta property="og:type" content="website" />
+        <meta property="og:title" content="{{OG_TITLE}}" />
+        <meta property="og:description" content="{{OG_DESCRIPTION}}" />
+        <meta property="og:image" content="{{OG_IMAGE}}" />
+        <meta property="og:url" content="{{OG_URL}}" />
+        <meta name="twitter:card" content="{{TWITTER_CARD}}" />
+        <meta name="socket-transports" content="{{SOCKET_TRANSPORTS}}" />
+        <meta name="reporting-enabled" content="{{REPORTING_ENABLED}}" />
+        <meta name="twitter:title" content="{{OG_TITLE}}" />
+        <meta name="twitter:description" content="{{OG_DESCRIPTION}}" />
+        <meta name="twitter:image" content="{{OG_IMAGE}}" />
+        <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+        <link rel="stylesheet" href="/css/index.css" />
+        <link rel="stylesheet" href="https://unpkg.com/tippy.js@6/dist/tippy.css" />
+        {{ANALYTICS_SCRIPT}}
+    </head>
+    <body>
+        <div class="app-shell">
+            <header class="top-bar">
+                <h1><img class="app-title-icon" src="/images/logo.svg" alt="" aria-hidden="true" />{{APP_NAME}}</h1>
+                <div class="top-bar-actions">
+                    <span id="connectionBadge" class="connection-badge idle">Idle</span>
+                    <button
+                        id="settingsBtn"
+                        class="btn icon-btn ghost-btn"
+                        type="button"
+                        aria-label="Open media settings"
+                        title="Open media settings"
+                        aria-expanded="false"
+                        aria-controls="settingsPanel"
+                    >
+                        <i data-lucide="settings" aria-hidden="true"></i>
+                    </button>
+                </div>
+                <div id="settingsPanel" class="settings-panel" hidden>
+                    <div class="device-controls">
+                        <label class="input-group" for="cameraSelect">
+                            <span>Camera</span>
+                            <select id="cameraSelect" disabled></select>
+                        </label>
+                        <label class="input-group" for="microphoneSelect">
+                            <span>Microphone</span>
+                            <select id="microphoneSelect" disabled></select>
+                        </label>
+                        <label class="input-group" for="backgroundModeSelect">
+                            <span>Background</span>
+                            <select id="backgroundModeSelect" disabled>
+                                <option value="off">Off</option>
+                                <option value="blur">Blur</option>
+                                <option value="image">Image</option>
+                            </select>
+                        </label>
+                        <div id="backgroundImagePickerRow" class="background-image-picker-row" hidden>
+                            <div id="backgroundPresetList" class="background-preset-list" aria-label="Background image">
+                                <button
+                                    id="backgroundImageBtn"
+                                    class="background-preset background-preset-upload"
+                                    type="button"
+                                    aria-label="Upload your own image"
+                                    title="Upload your own image"
+                                >
+                                    <i data-lucide="image-plus" aria-hidden="true"></i>
+                                </button>
+                            </div>
+                            <span id="backgroundImageName" class="background-image-name">No image selected</span>
+                            <input id="backgroundImageInput" type="file" accept="image/*" hidden />
+                        </div>
+                        <label class="toggle-row" for="soundEffectsToggle">
+                            <span>Sound effects</span>
+                            <span class="switch">
+                                <input id="soundEffectsToggle" type="checkbox" role="switch" />
+                                <span class="switch-track" aria-hidden="true"></span>
+                            </span>
+                        </label>
+                    </div>
+                </div>
+            </header>
+
+            <main id="videoLayout" class="video-layout">
+                <section class="video-card local">
+                    <span class="video-header">
+                        You
+                        <span
+                            id="localMicStatus"
+                            class="media-pill"
+                            hidden
+                            title="Your microphone is off"
+                            aria-label="Your microphone is off"
+                        >
+                            <i data-lucide="mic-off" aria-hidden="true"></i>
+                            <span class="sr-only">Your microphone is off</span>
+                        </span>
+                    </span>
+                    <video id="localVideo" autoplay playsinline muted></video>
+                    <div id="localAvatarOverlay" class="local-avatar-overlay" hidden>
+                        <div class="video-avatar">
+                            <i data-lucide="user" aria-hidden="true"></i>
+                            <span class="video-avatar-badge" aria-hidden="true">
+                                <i data-lucide="video-off"></i>
+                            </span>
+                        </div>
+                        <span>Camera is off</span>
+                    </div>
+                </section>
+
+                <section class="video-card remote">
+                    <span class="video-header">
+                        Partner
+                        <span id="remoteMediaStatus" class="media-status" hidden>
+                            <span
+                                id="remoteMicStatus"
+                                class="media-pill"
+                                hidden
+                                title="Partner microphone is off"
+                                aria-label="Partner microphone is off"
+                            >
+                                <i data-lucide="mic-off" aria-hidden="true"></i>
+                                <span class="sr-only">Partner microphone is off</span>
+                            </span>
+                        </span>
+                    </span>
+                    <video id="remoteVideo" autoplay playsinline></video>
+                    <div id="remoteAvatarOverlay" class="remote-avatar-overlay" hidden>
+                        <div class="video-avatar">
+                            <i data-lucide="user" aria-hidden="true"></i>
+                            <span class="video-avatar-badge" aria-hidden="true">
+                                <i data-lucide="video-off"></i>
+                            </span>
+                        </div>
+                        <span>Camera is off</span>
+                    </div>
+                    <div class="video-placeholder" id="remotePlaceholder" data-mode="idle">
+                        <span class="video-spinner" aria-hidden="true"></span>
+                        <span class="match-check" aria-hidden="true"><i data-lucide="check"></i></span>
+                        <h2 id="remotePlaceholderTitle" class="placeholder-title" hidden></h2>
+                        <p id="remotePlaceholderText" class="placeholder-text">Waiting for partner...</p>
+                        <span id="remotePlaceholderPill" class="placeholder-pill" hidden>
+                            <span class="pill-dot" aria-hidden="true"></span>
+                            Waiting queue · 1-to-1 matching
+                        </span>
+                    </div>
+                </section>
+                <aside id="chatPanel" class="chat-panel" aria-label="Chat" hidden>
+                    <div class="chat-header">
+                        <div class="chat-title">
+                            <h2>Chat</h2>
+                            <p class="chat-status">
+                                <span class="chat-status-dot" aria-hidden="true"></span>Partner is online
+                            </p>
+                        </div>
+                        <button id="chatCloseBtn" class="btn icon-btn ghost-btn" type="button" aria-label="Close chat">
+                            <i data-lucide="x" aria-hidden="true"></i>
+                        </button>
+                    </div>
+                    <div id="chatScroll" class="chat-scroll">
+                        <p class="chat-notice">Messages are private &amp; not stored</p>
+                        <ol id="chatMessages" class="chat-messages" aria-live="polite"></ol>
+                        <div id="chatTyping" class="chat-typing" hidden>
+                            <span class="sr-only">Partner is typing</span>
+                            <span class="chat-typing-dot" aria-hidden="true"></span>
+                            <span class="chat-typing-dot" aria-hidden="true"></span>
+                            <span class="chat-typing-dot" aria-hidden="true"></span>
+                        </div>
+                    </div>
+                    <form id="chatForm" class="chat-form">
+                        <input
+                            id="chatInput"
+                            type="text"
+                            autocomplete="off"
+                            placeholder="Type a message…"
+                            aria-label="Message"
+                        />
+                        <button class="btn icon-btn primary-btn chat-send-btn" type="submit" aria-label="Send message">
+                            <i data-lucide="send" aria-hidden="true"></i>
+                        </button>
+                    </form>
+                </aside>
+            </main>
+
+            <section class="control-bar" aria-label="Call controls">
+                <div class="status-area">
+                    <i data-lucide="sparkles" aria-hidden="true"></i>
+                    <p id="statusText" aria-live="polite">Press Start to meet someone new.</p>
+                </div>
+
+                <div class="call-controls">
+                    <button
+                        id="muteBtn"
+                        class="btn icon-btn"
+                        disabled
+                        aria-label="Mute microphone"
+                        aria-pressed="false"
+                        title="Toggle microphone"
+                    ></button>
+                    <button
+                        id="cameraBtn"
+                        class="btn icon-btn"
+                        disabled
+                        aria-label="Turn off camera"
+                        aria-pressed="false"
+                        title="Toggle camera"
+                    ></button>
+                    <button
+                        id="hideSelfBtn"
+                        class="btn icon-btn"
+                        type="button"
+                        aria-label="Hide my preview"
+                        aria-pressed="false"
+                        title="Hide my preview"
+                    ></button>
+                    <button
+                        id="enableSoundBtn"
+                        class="btn icon-btn"
+                        type="button"
+                        hidden
+                        aria-label="Enable sound"
+                        title="Enable sound"
+                    >
+                        <i data-lucide="volume-2" aria-hidden="true"></i>
+                    </button>
+                    <button
+                        id="chatBtn"
+                        class="btn icon-btn"
+                        type="button"
+                        disabled
+                        aria-label="Chat"
+                        aria-expanded="false"
+                        aria-controls="chatPanel"
+                        title="Chat"
+                    >
+                        <i data-lucide="message-square" aria-hidden="true"></i>
+                    </button>
+                    <span class="control-divider" aria-hidden="true"></span>
+                    <button
+                        id="reportBtn"
+                        class="btn icon-btn"
+                        type="button"
+                        hidden
+                        disabled
+                        aria-label="Report partner"
+                        title="Report partner"
+                    >
+                        <i data-lucide="flag" aria-hidden="true"></i>
+                    </button>
+                    <button
+                        id="endSessionBtn"
+                        class="btn icon-btn end-btn"
+                        type="button"
+                        aria-label="End session"
+                        title="End session"
+                        disabled
+                    >
+                        <i data-lucide="phone" aria-hidden="true"></i>
+                    </button>
+                </div>
+
+                <div class="match-controls">
+                    <button
+                        id="startBtn"
+                        class="btn pill-btn primary-btn"
+                        type="button"
+                        aria-label="Start matching"
+                        title="Start matching"
+                    >
+                        Start <i data-lucide="play" aria-hidden="true"></i>
+                    </button>
+                    <button
+                        id="nextBtn"
+                        class="btn pill-btn"
+                        type="button"
+                        disabled
+                        aria-label="Next match"
+                        title="Next match"
+                    >
+                        Next <i data-lucide="skip-forward" aria-hidden="true"></i>
+                    </button>
+                </div>
+            </section>
+
+            <footer class="app-footer">
+                <a href="/privacy.html">Privacy</a>
+                <span aria-hidden="true">•</span>
+                <a href="/terms.html">Terms</a>
+                <span aria-hidden="true">•</span>
+                <a href="/safety.html">Safety</a>
+                <span aria-hidden="true">•</span>
+                <a href="{{ABOUT_LINK}}">About</a>
+                <span id="footerVersion" class="footer-version">{{APP_VERSION}}</span>
+            </footer>
+
+            <p id="onboardingHint" class="sr-only">
+                Open media settings to prepare camera and microphone, then start matching.
+            </p>
+
+            <div
+                id="ageModal"
+                class="capacity-modal"
+                role="alertdialog"
+                aria-modal="true"
+                aria-labelledby="ageModalTitle"
+                aria-describedby="ageModalText"
+                hidden
+            >
+                <div class="capacity-modal-card modal-warning">
+                    <div class="modal-icon" aria-hidden="true"><i data-lucide="shield-alert"></i></div>
+                    <h2 id="ageModalTitle">Are you 18 or older?</h2>
+                    <p id="ageModalText">
+                        This service connects you with strangers and is for adults only. By continuing you confirm you
+                        are at least 18 and accept our <a href="/terms.html">Terms</a>.
+                    </p>
+                    <div class="modal-actions">
+                        <a id="ageDeclineBtn" class="btn pill-btn" href="https://www.google.com">Leave</a>
+                        <button id="ageConfirmBtn" class="btn pill-btn primary-btn" type="button">I'm 18+</button>
+                    </div>
+                </div>
+            </div>
+
+            <div
+                id="reportModal"
+                class="capacity-modal"
+                role="alertdialog"
+                aria-modal="true"
+                aria-labelledby="reportModalTitle"
+                aria-describedby="reportModalText"
+                hidden
+            >
+                <div class="capacity-modal-card modal-warning">
+                    <div class="modal-icon" aria-hidden="true"><i data-lucide="flag"></i></div>
+                    <h2 id="reportModalTitle">Report this partner?</h2>
+                    <p id="reportModalText">
+                        Report them if they showed nudity, harassment or anything illegal. The other person will not
+                        know who reported them, and no video or screenshot is sent. If several different users report
+                        the same person, they are temporarily banned. Please only report real violations.
+                    </p>
+                    <div class="modal-actions">
+                        <button id="reportCancelBtn" class="btn pill-btn" type="button">Cancel</button>
+                        <button id="reportConfirmBtn" class="btn pill-btn end-btn" type="button">Report</button>
+                    </div>
+                </div>
+            </div>
+
+            <div
+                id="bannedModal"
+                class="capacity-modal"
+                role="alertdialog"
+                aria-modal="true"
+                aria-labelledby="bannedModalTitle"
+                aria-describedby="bannedMessage"
+                hidden
+            >
+                <div class="capacity-modal-card modal-danger">
+                    <div class="modal-icon" aria-hidden="true"><i data-lucide="ban"></i></div>
+                    <h2 id="bannedModalTitle">You are banned</h2>
+                    <p id="bannedMessage">
+                        You have been banned for violating our rules, including illegal or inappropriate content.
+                    </p>
+                    <a class="btn pill-btn primary-btn" href="{{REPORT_EMAIL_LINK}}">Contact us</a>
+                </div>
+            </div>
+
+            <div
+                id="capacityModal"
+                class="capacity-modal"
+                role="alertdialog"
+                aria-modal="true"
+                aria-labelledby="capacityModalTitle"
+                aria-describedby="capacityMessage"
+                hidden
+            >
+                <div class="capacity-modal-card">
+                    <div class="modal-icon" aria-hidden="true"><i data-lucide="users"></i></div>
+                    <h2 id="capacityModalTitle">We’re full right now</h2>
+                    <p id="capacityMessage">
+                        All chat slots are currently busy. Please try again in a minute, we’ll be happy to connect you.
+                    </p>
+                    <button id="capacityRetryBtn" class="btn pill-btn primary-btn" type="button">Try again</button>
+                </div>
+            </div>
+        </div>
+
+        <script src="/socket.io/socket.io.js"></script>
+        <script src="https://unpkg.com/lucide@latest"></script>
+        <script src="https://unpkg.com/@popperjs/core@2"></script>
+        <script src="https://unpkg.com/tippy.js@6"></script>
+        <script type="module" src="/app.js"></script>
+    </body>
+</html>
